@@ -83,7 +83,8 @@ jobs:
             npx cap add android
           fi
           python3 -c '
-          import pathlib
+          import pathlib, re
+
           manifest_path = pathlib.Path("android/app/src/main/AndroidManifest.xml")
           text = manifest_path.read_text(encoding="utf-8")
           if "android:usesCleartextTraffic" not in text:
@@ -91,8 +92,128 @@ jobs:
           if "android:supportsRtl" not in text:
               text = text.replace("<application", "<application\n        android:supportsRtl=\"true\"", 1)
           if "android.permission.ACCESS_NETWORK_STATE" not in text:
-              text = text.replace("<uses-permission android:name=\"android.permission.INTERNET\" />", "<uses-permission android:name=\"android.permission.INTERNET\" />\n    <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />", 1)
+              text = text.replace(
+                  "<uses-permission android:name=\"android.permission.INTERNET\" />",
+                  "<uses-permission android:name=\"android.permission.INTERNET\" />\n    <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />",
+                  1,
+              )
+          camera_perms = []
+          if "android.permission.CAMERA" not in text:
+              camera_perms.append("    <uses-permission android:name=\"android.permission.CAMERA\" />")
+          if "android.permission.FLASHLIGHT" not in text:
+              camera_perms.append("    <uses-permission android:name=\"android.permission.FLASHLIGHT\" />")
+          if "android.hardware.camera\"" not in text:
+              camera_perms.append("    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />")
+          if "android.hardware.camera.autofocus" not in text:
+              camera_perms.append("    <uses-feature android:name=\"android.hardware.camera.autofocus\" android:required=\"false\" />")
+          if camera_perms:
+              anchor = "<uses-permission android:name=\"android.permission.INTERNET\" />"
+              text = text.replace(anchor, anchor + "\n" + "\n".join(camera_perms), 1)
           manifest_path.write_text(text, encoding="utf-8")
+
+          main_activities = list(pathlib.Path("android/app/src/main/java").rglob("MainActivity.java"))
+          if main_activities:
+              activity_path = main_activities[0]
+              orig = activity_path.read_text(encoding="utf-8")
+              pkg_match = re.search(r"^\s*package\s+([^;]+);", orig, re.MULTILINE)
+              pkg_name = pkg_match.group(1).strip() if pkg_match else "ir.esteam.pricetracker"
+              java_code = f"""package {pkg_name};
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.webkit.PermissionRequest;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import com.getcapacitor.BridgeActivity;
+import com.getcapacitor.BridgeWebChromeClient;
+
+public class MainActivity extends BridgeActivity {{
+    private static final int CAMERA_PERMISSION_REQUEST_CODE = 1042;
+    private PermissionRequest pendingWebViewPermissionRequest = null;
+    private boolean cameraChromeClientAttached = false;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {{
+        super.onCreate(savedInstanceState);
+        attachCameraPermissionChromeClient();
+    }}
+
+    @Override
+    public void onStart() {{
+        super.onStart();
+        attachCameraPermissionChromeClient();
+    }}
+
+    private void attachCameraPermissionChromeClient() {{
+        if (cameraChromeClientAttached || this.bridge == null || this.bridge.getWebView() == null) {{
+            return;
+        }}
+        cameraChromeClientAttached = true;
+        this.bridge.getWebView().setWebChromeClient(new BridgeWebChromeClient(this.bridge) {{
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {{
+                if (request == null) return;
+                String[] resources = request.getResources();
+                boolean wantsVideo = false;
+                if (resources != null) {{
+                    for (String r : resources) {{
+                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {{
+                            wantsVideo = true;
+                            break;
+                        }}
+                    }}
+                }}
+                if (!wantsVideo) {{
+                    super.onPermissionRequest(request);
+                    return;
+                }}
+
+                MainActivity.this.runOnUiThread(() -> {{
+                    if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
+                            == PackageManager.PERMISSION_GRANTED) {{
+                        request.grant(request.getResources());
+                    }} else {{
+                        if (pendingWebViewPermissionRequest != null) {{
+                            try {{
+                                pendingWebViewPermissionRequest.deny();
+                            }} catch (Exception ignored) {{}}
+                        }}
+                        pendingWebViewPermissionRequest = request;
+                        ActivityCompat.requestPermissions(
+                                MainActivity.this,
+                                new String[]{{Manifest.permission.CAMERA}},
+                                CAMERA_PERMISSION_REQUEST_CODE
+                        );
+                    }}
+                }});
+            }}
+        }});
+    }}
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {{
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE && pendingWebViewPermissionRequest != null) {{
+            PermissionRequest req = pendingWebViewPermissionRequest;
+            pendingWebViewPermissionRequest = null;
+            boolean granted = grantResults != null
+                    && grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            runOnUiThread(() -> {{
+                try {{
+                    if (granted) {{
+                        req.grant(req.getResources());
+                    }} else {{
+                        req.deny();
+                    }}
+                }} catch (Exception ignored) {{}}
+            }});
+        }}
+    }}
+}}
+"""
+              activity_path.write_text(java_code, encoding="utf-8")
           '
 
       - name: Apply App Icon & Sync Assets

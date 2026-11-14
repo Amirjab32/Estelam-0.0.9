@@ -86,6 +86,8 @@ import {
   ExternalLink,
   KeyRound,
   HardDrive,
+  RefreshCw,
+  Globe,
 } from 'lucide-react';
 import { toPersianDigits } from './utils/jalali.ts';
 
@@ -126,6 +128,9 @@ export default function App() {
   const [pinInput, setPinInput] = useState('');
   const [pinError, setPinError] = useState<string | null>(null);
   const [isVerifyingPin, setIsVerifyingPin] = useState(false);
+  const [isRetryingConnection, setIsRetryingConnection] = useState(false);
+  const [showGateServerEditor, setShowGateServerEditor] = useState(false);
+  const [gateOriginInput, setGateOriginInput] = useState<string>(() => getCloudflareOrigin());
 
   // Products, histories & sync states
   const [products, setProducts] = useState<ProductItem[]>([]);
@@ -233,7 +238,8 @@ export default function App() {
     }
     if (storagePreference === 'cloudflare') {
       if (cloudflareStatus.reachable) return pinVerified || offlineEntered;
-      return offlineEntered;
+      // Offline entry without explicit click only if user previously authenticated with PIN
+      return Boolean(savedPin) || offlineEntered;
     }
     // Auto mode:
     if (firebaseReachable && user && !firebaseDeniedEmail) return true;
@@ -241,7 +247,11 @@ export default function App() {
       return pinVerified || offlineEntered;
     }
     if (firebaseReachable && !user && pinVerified && cloudflareStatus.reachable) return true;
-    if (!firebaseReachable && !cloudflareStatus.reachable) return true; // Total outage -> instant offline dashboard
+    if (!firebaseReachable && !cloudflareStatus.reachable) {
+      // Total outage: auto-enter offline dashboard ONLY if the user previously logged in before
+      if (savedPin || user) return true;
+      return offlineEntered;
+    }
     return offlineEntered;
   })();
 
@@ -291,7 +301,7 @@ export default function App() {
         if (!active) return;
         if (pinCheck.valid) {
           setPinVerified(true);
-        } else {
+        } else if (pinCheck.unauthorized) {
           clearSavedShopPin();
           setSavedPin('');
           setPinVerified(false);
@@ -703,12 +713,27 @@ export default function App() {
         return;
       }
 
+      // If Cloudflare recovered and user has a stored PIN from an offline boot, verify it automatically
+      let isPinOk = pinVerified;
+      if (cfStatus.reachable && savedPin && !isPinOk) {
+        const pinCheck = await verifyShopPinOnEdge(savedPin);
+        if (cancelled) return;
+        if (pinCheck.valid) {
+          setPinVerified(true);
+          isPinOk = true;
+        } else if (pinCheck.unauthorized) {
+          clearSavedShopPin();
+          setSavedPin('');
+          setPinVerified(false);
+        }
+      }
+
       // If Cloudflare KV recovered (without VPN) and PIN is verified with offline-dirty changes, push merged bundle
       if (
         cfStatus.reachable &&
         cfStatus.kvConfigured &&
         savedPin &&
-        pinVerified &&
+        isPinOk &&
         hasDirtyOfflineChanges &&
         offlineCached
       ) {
@@ -888,16 +913,55 @@ export default function App() {
   const handleSaveCloudflareOrigin = async (rawUrl: string) => {
     const updated = persistCloudflareOrigin(rawUrl);
     setCloudflareOriginState(updated);
+    setGateOriginInput(updated);
     const cfStatus = await probeCloudflareStatus();
     setCloudflareStatus(cfStatus);
     if (cfStatus.reachable) {
       if (savedPin) {
         const pinCheck = await verifyShopPinOnEdge(savedPin);
-        setPinVerified(pinCheck.valid);
+        if (pinCheck.valid) {
+          setPinVerified(true);
+        } else if (pinCheck.unauthorized) {
+          clearSavedShopPin();
+          setSavedPin('');
+          setPinVerified(false);
+        }
       }
       showToast(`آدرس سرور کلادفلر روی ${updated} ذخیره و متصل شد`);
     } else {
       showToast(`آدرس ${updated} ذخیره شد (در حال حاضر به کلادفلر دسترسی برقرار نشد)`);
+    }
+  };
+
+  const handleRetryGateConnection = async () => {
+    setIsRetryingConnection(true);
+    setPinError(null);
+    try {
+      const [fbOk, cfStatus] = await Promise.all([
+        probeFirebaseReachable(4500),
+        probeCloudflareStatus(),
+      ]);
+      setFirebaseReachable(fbOk);
+      setCloudflareStatus(cfStatus);
+
+      if (cfStatus.reachable && savedPin) {
+        const pinCheck = await verifyShopPinOnEdge(savedPin);
+        if (pinCheck.valid) {
+          setPinVerified(true);
+        } else if (pinCheck.unauthorized) {
+          clearSavedShopPin();
+          setSavedPin('');
+          setPinVerified(false);
+        }
+      }
+
+      if (cfStatus.reachable || fbOk) {
+        showToast('ارتباط با سرور برقرار شد');
+      } else {
+        showToast('هنوز پاسخی از سرور دریافت نشد؛ اینترنت یا آدرس سرور را بررسی کنید');
+      }
+    } finally {
+      setIsRetryingConnection(false);
     }
   };
 
@@ -1490,6 +1554,7 @@ export default function App() {
   // Dual Access Gate (Google Firebase OR Cloudflare Shop PIN OR Offline JSON mode)
   if (!hasDashboardAccess) {
     const isFailoverToCloudflare = !firebaseReachable && cloudflareStatus.reachable;
+    const isBothUnreachable = !firebaseReachable && !cloudflareStatus.reachable;
 
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4 font-sans">
@@ -1512,6 +1577,75 @@ export default function App() {
               <span>
                 ارتباط با گوگل فایربیس برقرار نشد (احتمالاً فیلترشکن خاموش است)؛ سیستم به‌صورت خودکار به <strong>کلادفلر</strong> سوئیچ شد. رمز فروشگاه را یک‌بار وارد کنید.
               </span>
+            </div>
+          )}
+
+          {isBothUnreachable && (
+            <div className="p-3.5 rounded-2xl bg-rose-950/40 border border-rose-800/50 text-xs text-rose-200 space-y-3">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1 flex-1">
+                  <p className="font-semibold">
+                    ارتباط اولیه با سرور کلادفلر برقرار نشد.
+                  </p>
+                  <p className="text-[11px] text-rose-200/80 leading-relaxed">
+                    مطمئن شوید اینترنت گوشی روشن است، یا آدرس سرور را بررسی و دوباره تلاش کنید، یا رمز فروشگاه را وارد نمایید.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={handleRetryGateConnection}
+                  disabled={isRetryingConnection}
+                  className="min-h-[34px] px-3 py-1.5 rounded-xl bg-rose-600/80 hover:bg-rose-500 disabled:opacity-50 text-white text-[11px] font-bold inline-flex items-center gap-1.5 transition"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isRetryingConnection ? 'animate-spin' : ''}`} />
+                  <span>{isRetryingConnection ? 'در حال بررسی...' : 'تلاش مجدد اتصال'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowGateServerEditor((v) => !v)}
+                  className="min-h-[34px] px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-200 text-[11px] font-medium inline-flex items-center gap-1.5 transition"
+                >
+                  <Globe className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>تنظیم آدرس سرور</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {showGateServerEditor && (
+            <div className="p-3.5 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+              <label className="block text-[11px] font-semibold text-slate-300">
+                آدرس سایت کلادفلر پیجز
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  dir="ltr"
+                  value={gateOriginInput}
+                  onChange={(e) => setGateOriginInput(e.target.value)}
+                  placeholder="https://estelam-005.pages.dev"
+                  className="flex-1 rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setIsRetryingConnection(true);
+                    try {
+                      await handleSaveCloudflareOrigin(gateOriginInput);
+                      setShowGateServerEditor(false);
+                    } finally {
+                      setIsRetryingConnection(false);
+                    }
+                  }}
+                  disabled={isRetryingConnection || !gateOriginInput.trim()}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white text-xs font-bold transition whitespace-nowrap"
+                >
+                  ذخیره و اتصال
+                </button>
+              </div>
             </div>
           )}
 
@@ -1574,19 +1708,28 @@ export default function App() {
             </div>
           )}
 
-          {/* Option 2: Cloudflare Shop PIN (No VPN) */}
-          {cloudflareStatus.reachable && (
+          {/* Option 2: Cloudflare Shop PIN (Always accessible unless strictly Firebase-only) */}
+          {storagePreference !== 'firebase' && (
             <form
               onSubmit={handleEntryPinSubmit}
               className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3"
             >
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-xs font-bold text-emerald-300 flex items-center gap-1.5">
                   <Shield className="w-4 h-4 text-emerald-400" />
                   <span>ورود بدون فیلترشکن با کلادفلر</span>
                 </span>
-                <span className="text-[10px] text-slate-400">ذخیره دائمی روی این سیستم</span>
+                <span className="text-[10px] text-slate-400">ذخیره دائمی روی این دستگاه</span>
               </div>
+
+              {(isNativeAndroid || isElectronDesktop) && (
+                <div className="flex items-center justify-between text-[10px] text-slate-400 bg-slate-900/70 rounded-xl px-2.5 py-1.5 border border-slate-800/80">
+                  <span>سرور:</span>
+                  <span dir="ltr" className="font-mono text-slate-300 truncate max-w-[230px]">
+                    {cloudflareOrigin}
+                  </span>
+                </div>
+              )}
 
               <div className="flex gap-2">
                 <div className="relative flex-1">
@@ -1607,7 +1750,7 @@ export default function App() {
                   {isVerifyingPin ? 'بررسی...' : 'ورود با کلادفلر'}
                 </button>
               </div>
-              {!cloudflareStatus.kvConfigured && (
+              {cloudflareStatus.reachable && !cloudflareStatus.kvConfigured && (
                 <p className="text-[11px] text-amber-300 leading-relaxed bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
                   توجه: حافظه KV هنوز در بخش Bindings پروژه کلادفلر (Production / Preview) متصل و ری‌دیپلوی نشده است؛ تا پیش از اتصال KV، کالاها فقط در مرورگر فعلی ذخیره می‌شوند.
                 </p>

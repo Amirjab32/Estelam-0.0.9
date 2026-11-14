@@ -10,16 +10,22 @@ let isQuitting = false;
 const SERVER_PORT = Number(process.env.PORT) || 3000;
 const BASE_URL = `http://localhost:${SERVER_PORT}`;
 
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  if (mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+    mainWindow.webContents.focus();
+  }
+}
+
 const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    focusMainWindow();
   });
 }
 
@@ -97,10 +103,7 @@ function createTray() {
     {
       label: 'نمایش پنجره برنامه',
       click: () => {
-        if (mainWindow) {
-          mainWindow.show();
-          mainWindow.focus();
-        }
+        focusMainWindow();
       },
     },
     {
@@ -121,10 +124,7 @@ function createTray() {
 
   tray.setContextMenu(contextMenu);
   tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    focusMainWindow();
   });
 }
 
@@ -145,6 +145,22 @@ function createWindow() {
   });
 
   mainWindow.loadURL(BASE_URL);
+
+  mainWindow.once('ready-to-show', () => {
+    focusMainWindow();
+  });
+
+  mainWindow.on('show', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.focus();
+    }
+  });
+
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.focus();
+    }
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://127.0.0.1') || url.startsWith('http://localhost')) {
@@ -179,8 +195,5 @@ app.on('before-quit', () => {
 });
 
 app.on('activate', () => {
-  if (mainWindow) {
-    mainWindow.show();
-    mainWindow.focus();
-  }
+  focusMainWindow();
 });

@@ -51,6 +51,7 @@ export const CameraBarcodeViewport: React.FC<CameraBarcodeViewportProps> = ({
   const [status, setStatus] = useState<'initializing' | 'ready' | 'error'>('initializing');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [engineLabel, setEngineLabel] = useState<string>('موتور اسکن نوری');
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     onDetectedRef.current = onDetected;
@@ -251,7 +252,7 @@ export const CameraBarcodeViewport: React.FC<CameraBarcodeViewportProps> = ({
         videoRef.current.srcObject = null;
       }
     };
-  }, [active, selectedDeviceId]);
+  }, [active, selectedDeviceId, retryNonce]);
 
   const handleToggleTorch = async () => {
     const track = trackRef.current;
@@ -350,9 +351,17 @@ export const CameraBarcodeViewport: React.FC<CameraBarcodeViewportProps> = ({
 
       {/* Error Overlay */}
       {status === 'error' && (
-        <div className="absolute inset-0 bg-slate-950/95 p-4 flex flex-col items-center justify-center text-center gap-2">
+        <div className="absolute inset-0 bg-slate-950/95 p-4 flex flex-col items-center justify-center text-center gap-3">
           <AlertCircle className="w-7 h-7 text-rose-400" />
           <p className="text-xs text-rose-200 max-w-sm leading-relaxed">{errorMessage}</p>
+          <button
+            type="button"
+            onClick={() => setRetryNonce((n) => n + 1)}
+            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold inline-flex items-center gap-1.5 transition"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>درخواست مجدد اجازه دوربین</span>
+          </button>
         </div>
       )}
     </div>

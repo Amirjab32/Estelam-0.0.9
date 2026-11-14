@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { doc, getDocFromServer } from 'firebase/firestore';
 import { db } from '../firebase.ts';
 import {
@@ -432,11 +432,102 @@ export function downloadBackupJson(bundle: BackupBundle): void {
   URL.revokeObjectURL(url);
 }
 
-async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs = 4000) {
+interface EdgeHttpResponse {
+  ok: boolean;
+  status: number;
+  headers: Record<string, string>;
+  data: any;
+}
+
+async function edgeHttpRequest(
+  url: string,
+  options: {
+    method: 'GET' | 'POST' | 'PUT';
+    headers?: Record<string, string>;
+    body?: unknown;
+    timeoutMs?: number;
+  }
+): Promise<EdgeHttpResponse> {
+  const timeoutMs = options.timeoutMs ?? 8500;
+
+  if (Capacitor.isNativePlatform()) {
+    const response = await CapacitorHttp.request({
+      url,
+      method: options.method,
+      headers: {
+        Accept: 'application/json',
+        ...(options.headers || {}),
+      },
+      data: options.body !== undefined ? options.body : undefined,
+      connectTimeout: timeoutMs,
+      readTimeout: timeoutMs,
+    });
+
+    const normalizedHeaders: Record<string, string> = {};
+    if (response.headers && typeof response.headers === 'object') {
+      Object.entries(response.headers).forEach(([k, v]) => {
+        normalizedHeaders[k.toLowerCase()] = String(v);
+      });
+    }
+
+    let parsedData = response.data;
+    if (typeof parsedData === 'string') {
+      const trimmed = parsedData.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          parsedData = JSON.parse(trimmed);
+        } catch {
+          // Keep raw string if malformed
+        }
+      }
+    }
+
+    const status = Number(response.status) || 0;
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      headers: normalizedHeaders,
+      data: parsedData,
+    };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const res = await fetch(url, {
+      method: options.method,
+      headers: options.headers,
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+
+    const normalizedHeaders: Record<string, string> = {};
+    res.headers.forEach((value, key) => {
+      normalizedHeaders[key.toLowerCase()] = value;
+    });
+
+    const contentType = normalizedHeaders['content-type'] || '';
+    let parsedData: any = null;
+    if (contentType.includes('application/json')) {
+      parsedData = await res.json().catch(() => null);
+    } else {
+      const text = await res.text().catch(() => '');
+      const trimmed = text.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          parsedData = JSON.parse(trimmed);
+        } catch {
+          parsedData = null;
+        }
+      }
+    }
+
+    return {
+      ok: res.ok,
+      status: res.status,
+      headers: normalizedHeaders,
+      data: parsedData,
+    };
   } finally {
     clearTimeout(timer);
   }
@@ -444,21 +535,29 @@ async function fetchWithTimeout(input: string, init: RequestInit = {}, timeoutMs
 
 export async function probeCloudflareStatus(): Promise<CloudflareStatus> {
   const bases = getKvBaseCandidates();
-  for (const base of bases) {
-    try {
-      const res = await fetchWithTimeout(`${base}/api/kv/status`, { method: 'GET' }, 4000);
-      const contentType = res.headers.get('content-type') || '';
-      if (!res.ok || !contentType.includes('application/json')) continue;
-      const json = await res.json();
-      if (json?.success && json?.available) {
-        return {
-          reachable: true,
-          kvConfigured: Boolean(json?.kvConfigured),
-          kvBindingName: json?.kvBindingName ?? null,
-        };
+  const maxAttempts = Capacitor.isNativePlatform() ? 2 : 1;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    for (const base of bases) {
+      try {
+        const res = await edgeHttpRequest(`${base}/api/kv/status`, {
+          method: 'GET',
+          timeoutMs: Capacitor.isNativePlatform() ? 8500 : 4500,
+        });
+        const json = res.data;
+        if (res.ok && json && typeof json === 'object' && json.success && json.available) {
+          return {
+            reachable: true,
+            kvConfigured: Boolean(json?.kvConfigured),
+            kvBindingName: json?.kvBindingName ?? null,
+          };
+        }
+      } catch {
+        // Try next candidate or retry
       }
-    } catch {
-      // Try next candidate
+    }
+    if (attempt + 1 < maxAttempts) {
+      await new Promise((r) => setTimeout(r, 350));
     }
   }
   return { reachable: false, kvConfigured: false, kvBindingName: null };
@@ -467,34 +566,33 @@ export async function probeCloudflareStatus(): Promise<CloudflareStatus> {
 export async function verifyShopPinOnEdge(pin: string): Promise<{
   valid: boolean;
   kvConfigured: boolean;
+  unauthorized?: boolean;
   error?: string;
 }> {
   const bases = getKvBaseCandidates();
   let lastError = 'امکان برقراری ارتباط با سرور کلادفلر وجود ندارد.';
   for (const base of bases) {
     try {
-      const res = await fetchWithTimeout(
-        `${base}/api/kv/verify-pin`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pin: pin.trim() }),
-        },
-        4500
-      );
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) continue;
-      const json = await res.json();
+      const res = await edgeHttpRequest(`${base}/api/kv/verify-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: { pin: pin.trim() },
+        timeoutMs: Capacitor.isNativePlatform() ? 8500 : 5000,
+      });
+      const json = res.data;
+      if (!json || typeof json !== 'object') continue;
       if (!res.ok || !json?.success) {
         return {
           valid: false,
           kvConfigured: Boolean(json?.kvConfigured),
+          unauthorized: res.status === 401,
           error: json?.error || 'رمز فروشگاه نادرست است.',
         };
       }
       return {
         valid: true,
         kvConfigured: Boolean(json?.kvConfigured),
+        unauthorized: false,
       };
     } catch {
       lastError = 'امکان برقراری ارتباط با سرور کلادفلر وجود ندارد.';
@@ -503,6 +601,7 @@ export async function verifyShopPinOnEdge(pin: string): Promise<{
   return {
     valid: false,
     kvConfigured: false,
+    unauthorized: false,
     error: lastError,
   };
 }
@@ -517,21 +616,17 @@ export async function changeShopPinOnEdge(
 
   for (const base of bases) {
     try {
-      const res = await fetchWithTimeout(
-        `${base}/api/kv/change-pin`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            currentPin: currentPin.trim(),
-            newPin: newPin.trim(),
-          }),
+      const res = await edgeHttpRequest(`${base}/api/kv/change-pin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          currentPin: currentPin.trim(),
+          newPin: newPin.trim(),
         },
-        5000
-      );
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) continue;
-      const json = await res.json();
+        timeoutMs: Capacitor.isNativePlatform() ? 9000 : 5500,
+      });
+      const json = res.data;
+      if (!json || typeof json !== 'object') continue;
       if (!res.ok || !json?.success) {
         lastError = json?.error || 'امکان تغییر رمز فروشگاه فراهم نشد.';
         if (res.status === 401 && !anySucceeded) {
@@ -566,20 +661,16 @@ export async function fetchCloudflareBundle(pin: string): Promise<{
   const bases = getKvBaseCandidates();
   for (const base of bases) {
     try {
-      const res = await fetchWithTimeout(
-        `${base}/api/kv/bundle`,
-        {
-          method: 'GET',
-          headers: { 'X-Shop-Pin': pin.trim() },
-        },
-        5000
-      );
+      const res = await edgeHttpRequest(`${base}/api/kv/bundle`, {
+        method: 'GET',
+        headers: { 'X-Shop-Pin': pin.trim() },
+        timeoutMs: Capacitor.isNativePlatform() ? 9500 : 5500,
+      });
       if (res.status === 401) {
         return { reachable: true, kvConfigured: true, unauthorized: true, bundle: null };
       }
-      const contentType = res.headers.get('content-type') || '';
-      if (!res.ok || !contentType.includes('application/json')) continue;
-      const json = await res.json();
+      const json = res.data;
+      if (!res.ok || !json || typeof json !== 'object') continue;
       if (!json?.kvConfigured) {
         return { reachable: true, kvConfigured: false, unauthorized: false, bundle: null };
       }
@@ -633,18 +724,15 @@ export async function pushCloudflareBundle(
 
   for (const base of bases) {
     try {
-      const res = await fetchWithTimeout(
-        `${base}/api/kv/bundle`,
-        {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Shop-Pin': pin.trim(),
-          },
-          body: JSON.stringify(bundle),
+      const res = await edgeHttpRequest(`${base}/api/kv/bundle`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Shop-Pin': pin.trim(),
         },
-        6000
-      );
+        body: bundle,
+        timeoutMs: Capacitor.isNativePlatform() ? 10000 : 6500,
+      });
       if (res.status === 401) {
         if (!primaryResult) {
           return {
@@ -658,9 +746,8 @@ export async function pushCloudflareBundle(
         }
         continue;
       }
-      const contentType = res.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) continue;
-      const json = await res.json();
+      const json = res.data;
+      if (!json || typeof json !== 'object') continue;
       const kvConfigured = Boolean(json?.kvConfigured);
       const saved = Boolean(res.ok && json?.success && kvConfigured);
       const result = {
