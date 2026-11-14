@@ -83,7 +83,7 @@ jobs:
             npx cap add android
           fi
           python3 -c '
-          import pathlib, re
+          import pathlib, re, textwrap
 
           manifest_path = pathlib.Path("android/app/src/main/AndroidManifest.xml")
           text = manifest_path.read_text(encoding="utf-8")
@@ -117,102 +117,103 @@ jobs:
               orig = activity_path.read_text(encoding="utf-8")
               pkg_match = re.search(r"^\s*package\s+([^;]+);", orig, re.MULTILINE)
               pkg_name = pkg_match.group(1).strip() if pkg_match else "ir.esteam.pricetracker"
-              java_code = f"""package {pkg_name};
+              java_code = textwrap.dedent(f"""\
+                  package {pkg_name};
 
-import android.Manifest;
-import android.content.pm.PackageManager;
-import android.os.Bundle;
-import android.webkit.PermissionRequest;
-import androidx.core.app.ActivityCompat;
-import androidx.core.content.ContextCompat;
-import com.getcapacitor.BridgeActivity;
-import com.getcapacitor.BridgeWebChromeClient;
+                  import android.Manifest;
+                  import android.content.pm.PackageManager;
+                  import android.os.Bundle;
+                  import android.webkit.PermissionRequest;
+                  import androidx.core.app.ActivityCompat;
+                  import androidx.core.content.ContextCompat;
+                  import com.getcapacitor.BridgeActivity;
+                  import com.getcapacitor.BridgeWebChromeClient;
 
-public class MainActivity extends BridgeActivity {{
-    private static final int CAMERA_PERMISSION_REQUEST_CODE = 1042;
-    private PermissionRequest pendingWebViewPermissionRequest = null;
-    private boolean cameraChromeClientAttached = false;
+                  public class MainActivity extends BridgeActivity {{
+                      private static final int CAMERA_PERMISSION_REQUEST_CODE = 1042;
+                      private PermissionRequest pendingWebViewPermissionRequest = null;
+                      private boolean cameraChromeClientAttached = false;
 
-    @Override
-    protected void onCreate(Bundle savedInstanceState) {{
-        super.onCreate(savedInstanceState);
-        attachCameraPermissionChromeClient();
-    }}
+                      @Override
+                      protected void onCreate(Bundle savedInstanceState) {{
+                          super.onCreate(savedInstanceState);
+                          attachCameraPermissionChromeClient();
+                      }}
 
-    @Override
-    public void onStart() {{
-        super.onStart();
-        attachCameraPermissionChromeClient();
-    }}
+                      @Override
+                      public void onStart() {{
+                          super.onStart();
+                          attachCameraPermissionChromeClient();
+                      }}
 
-    private void attachCameraPermissionChromeClient() {{
-        if (cameraChromeClientAttached || this.bridge == null || this.bridge.getWebView() == null) {{
-            return;
-        }}
-        cameraChromeClientAttached = true;
-        this.bridge.getWebView().setWebChromeClient(new BridgeWebChromeClient(this.bridge) {{
-            @Override
-            public void onPermissionRequest(final PermissionRequest request) {{
-                if (request == null) return;
-                String[] resources = request.getResources();
-                boolean wantsVideo = false;
-                if (resources != null) {{
-                    for (String r : resources) {{
-                        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {{
-                            wantsVideo = true;
-                            break;
-                        }}
-                    }}
-                }}
-                if (!wantsVideo) {{
-                    super.onPermissionRequest(request);
-                    return;
-                }}
+                      private void attachCameraPermissionChromeClient() {{
+                          if (cameraChromeClientAttached || this.bridge == null || this.bridge.getWebView() == null) {{
+                              return;
+                          }}
+                          cameraChromeClientAttached = true;
+                          this.bridge.getWebView().setWebChromeClient(new BridgeWebChromeClient(this.bridge) {{
+                              @Override
+                              public void onPermissionRequest(final PermissionRequest request) {{
+                                  if (request == null) return;
+                                  String[] resources = request.getResources();
+                                  boolean wantsVideo = false;
+                                  if (resources != null) {{
+                                      for (String r : resources) {{
+                                          if (PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {{
+                                              wantsVideo = true;
+                                              break;
+                                          }}
+                                      }}
+                                  }}
+                                  if (!wantsVideo) {{
+                                      super.onPermissionRequest(request);
+                                      return;
+                                  }}
 
-                MainActivity.this.runOnUiThread(() -> {{
-                    if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
-                            == PackageManager.PERMISSION_GRANTED) {{
-                        request.grant(request.getResources());
-                    }} else {{
-                        if (pendingWebViewPermissionRequest != null) {{
-                            try {{
-                                pendingWebViewPermissionRequest.deny();
-                            }} catch (Exception ignored) {{}}
-                        }}
-                        pendingWebViewPermissionRequest = request;
-                        ActivityCompat.requestPermissions(
-                                MainActivity.this,
-                                new String[]{{Manifest.permission.CAMERA}},
-                                CAMERA_PERMISSION_REQUEST_CODE
-                        );
-                    }}
-                }});
-            }}
-        }});
-    }}
+                                  MainActivity.this.runOnUiThread(() -> {{
+                                      if (ContextCompat.checkSelfPermission(MainActivity.this, Manifest.permission.CAMERA)
+                                              == PackageManager.PERMISSION_GRANTED) {{
+                                          request.grant(request.getResources());
+                                      }} else {{
+                                          if (pendingWebViewPermissionRequest != null) {{
+                                              try {{
+                                                  pendingWebViewPermissionRequest.deny();
+                                              }} catch (Exception ignored) {{}}
+                                          }}
+                                          pendingWebViewPermissionRequest = request;
+                                          ActivityCompat.requestPermissions(
+                                                  MainActivity.this,
+                                                  new String[]{{Manifest.permission.CAMERA}},
+                                                  CAMERA_PERMISSION_REQUEST_CODE
+                                          );
+                                      }}
+                                  }});
+                              }}
+                          }});
+                      }}
 
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {{
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CAMERA_PERMISSION_REQUEST_CODE && pendingWebViewPermissionRequest != null) {{
-            PermissionRequest req = pendingWebViewPermissionRequest;
-            pendingWebViewPermissionRequest = null;
-            boolean granted = grantResults != null
-                    && grantResults.length > 0
-                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-            runOnUiThread(() -> {{
-                try {{
-                    if (granted) {{
-                        req.grant(req.getResources());
-                    }} else {{
-                        req.deny();
-                    }}
-                }} catch (Exception ignored) {{}}
-            }});
-        }}
-    }}
-}}
-"""
+                      @Override
+                      public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {{
+                          super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                          if (requestCode == CAMERA_PERMISSION_REQUEST_CODE && pendingWebViewPermissionRequest != null) {{
+                              PermissionRequest req = pendingWebViewPermissionRequest;
+                              pendingWebViewPermissionRequest = null;
+                              boolean granted = grantResults != null
+                                      && grantResults.length > 0
+                                      && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+                              runOnUiThread(() -> {{
+                                  try {{
+                                      if (granted) {{
+                                          req.grant(req.getResources());
+                                      }} else {{
+                                          req.deny();
+                                      }}
+                                  }} catch (Exception ignored) {{}}
+                              }});
+                          }}
+                      }}
+                  }}
+              """)
               activity_path.write_text(java_code, encoding="utf-8")
           '
 
