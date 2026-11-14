@@ -36,6 +36,138 @@ function guessCategory(title) {
   return 'لوازم جانبی و قطعات';
 }
 
+function isDigikalaVariantInStockEdge(v) {
+  if (!v || !v.price) return false;
+  if (v.status && v.status !== 'marketable') return false;
+  if (v.has_stock === false) return false;
+  const stock = v.price.marketable_stock;
+  if (stock !== undefined && stock !== null && Number(stock) <= 0) return false;
+  return true;
+}
+
+function parseDigikalaVariantCandidateEdge(v) {
+  const p = v && v.price;
+  if (!p) return null;
+  const rrpToman = p.rrp_price ? Math.round(Number(p.rrp_price) / 10) : 0;
+  const sellingToman = p.selling_price ? Math.round(Number(p.selling_price) / 10) : 0;
+  const genuinePriceToman = rrpToman > 0 ? rrpToman : sellingToman;
+  if (!Number.isFinite(genuinePriceToman) || genuinePriceToman <= 0) return null;
+
+  const discountNum = p.discount_percent ? Number(p.discount_percent) : 0;
+  const isDiscounted =
+    Boolean(p.is_incredible) ||
+    Boolean(p.is_promotion) ||
+    discountNum > 0 ||
+    (rrpToman > 0 && sellingToman > 0 && sellingToman < rrpToman);
+
+  return {
+    variant: v,
+    genuinePriceToman,
+    sellingToman,
+    isDiscounted,
+    discountNum,
+    sellerTitle: String((v && v.seller && v.seller.title) || '').trim(),
+  };
+}
+
+function selectDigikalaBestVariantPriceEdge(prod, elapsed) {
+  const titleClean = String((prod && prod.title_fa) || 'کالای دیجی‌کالا').trim();
+  const cat = (prod && prod.category && prod.category.title_fa) || guessCategory(titleClean);
+  const img =
+    (prod && prod.images && prod.images.main && prod.images.main.url && prod.images.main.url[0]) ||
+    'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
+
+  const defaultVar = prod && prod.default_variant;
+  const rawVariants = Array.isArray(prod && prod.variants) ? prod.variants : [];
+
+  const mergedVariants = [];
+  const seenIds = new Set();
+  for (const v of [defaultVar, ...rawVariants]) {
+    if (!v || typeof v !== 'object') continue;
+    const vid = v.id;
+    if (vid !== undefined && vid !== null) {
+      if (seenIds.has(vid)) continue;
+      seenIds.add(vid);
+    }
+    mergedVariants.push(v);
+  }
+
+  const targetColorId = defaultVar && defaultVar.color ? defaultVar.color.id : null;
+  const targetSizeId = defaultVar && defaultVar.size ? defaultVar.size.id : null;
+
+  const candidates = [];
+  for (const v of mergedVariants) {
+    if (!isDigikalaVariantInStockEdge(v)) continue;
+    if (targetColorId !== null && targetColorId !== undefined) {
+      const vColorId = v && v.color ? v.color.id : undefined;
+      if (vColorId !== targetColorId) continue;
+    }
+    if (targetSizeId !== null && targetSizeId !== undefined) {
+      const vSizeId = v && v.size ? v.size.id : undefined;
+      if (vSizeId !== targetSizeId) continue;
+    }
+    const parsed = parseDigikalaVariantCandidateEdge(v);
+    if (parsed) candidates.push(parsed);
+  }
+
+  candidates.sort((a, b) => {
+    if (a.genuinePriceToman !== b.genuinePriceToman) {
+      return a.genuinePriceToman - b.genuinePriceToman;
+    }
+    if (a.isDiscounted !== b.isDiscounted) {
+      return a.isDiscounted ? 1 : -1;
+    }
+    if (defaultVar && defaultVar.id !== undefined && defaultVar.id !== null) {
+      if (a.variant.id === defaultVar.id) return -1;
+      if (b.variant.id === defaultVar.id) return 1;
+    }
+    return a.sellingToman - b.sellingToman;
+  });
+
+  const best = candidates[0];
+  if (!best) {
+    return {
+      name: titleClean,
+      category: cat,
+      priceToman: 0,
+      imageUrl: img,
+      warranty: '',
+      source: `استعلام لبه کلادفلر (${elapsed}ms) - کالای ناموجود`,
+      stockStatus: 'out_of_stock',
+      selectorUsed: 'api.digikala.com (status: out_of_stock)',
+      queryTimeMs: elapsed,
+    };
+  }
+
+  const defaultSeller = String((defaultVar && defaultVar.seller && defaultVar.seller.title) || '').trim();
+  const usedCheaperSeller =
+    Boolean(best.sellerTitle) && Boolean(defaultSeller) && best.sellerTitle !== defaultSeller;
+
+  const sellerTag = best.sellerTitle ? ` - ${best.sellerTitle}` : '';
+  const sourceLabel = best.isDiscounted
+    ? `استعلام ابری کلادفلر (${elapsed}ms) قیمت اصلی بدون تخفیف${sellerTag}`
+    : usedCheaperSeller
+      ? `استعلام ابری کلادفلر (${elapsed}ms) کمترین قیمت غیرتخفیفی${sellerTag}`
+      : `استعلام ابری کلادفلر (${elapsed}ms) قیمت مستقیم کالا${sellerTag}`;
+
+  return {
+    name: titleClean,
+    category: cat,
+    priceToman: best.genuinePriceToman,
+    imageUrl: img,
+    warranty: '',
+    source: sourceLabel,
+    stockStatus: 'in_stock',
+    selectorUsed: usedCheaperSeller
+      ? 'api.digikala.com (Cloudflare Edge - variants min genuine same-color)'
+      : 'api.digikala.com (Cloudflare Pages Edge Worker)',
+    hasDiscount: best.isDiscounted,
+    discountedPriceToman: best.isDiscounted ? best.sellingToman : undefined,
+    discountPercent: best.discountNum > 0 ? `${best.discountNum}٪` : undefined,
+    queryTimeMs: elapsed,
+  };
+}
+
 const DEFAULT_PRODUCTS = [
   {
     id: 'prod_lenovo_ideapad_1',
@@ -507,60 +639,8 @@ export default {
         }
 
         const elapsed = Date.now() - t0;
-        const prod = finalJson.data.product;
-        const titleClean = (prod.title_fa || 'کالای دیجی‌کالا').trim();
-        const cat = prod.category?.title_fa || guessCategory(titleClean);
-        const img =
-          prod.images?.main?.url?.[0] ||
-          'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
-
-        const priceObj = prod.default_variant?.price;
-
-        if (!priceObj) {
-          return jsonResponse({
-            success: true,
-            data: {
-              name: titleClean,
-              category: cat,
-              priceToman: 0,
-              imageUrl: img,
-              warranty: '',
-              source: `استعلام لبه کلادفلر (${elapsed}ms) - کالای ناموجود`,
-              stockStatus: 'out_of_stock',
-              selectorUsed: 'api.digikala.com (status: out_of_stock)',
-              queryTimeMs: elapsed,
-            },
-          });
-        }
-
-        const isDiscounted =
-          Boolean(priceObj.is_incredible) ||
-          Boolean(priceObj.is_promotion) ||
-          Boolean(priceObj.discount_percent && priceObj.discount_percent > 0);
-
-        const rrpToman = priceObj.rrp_price ? Math.round(priceObj.rrp_price / 10) : 0;
-        const sellingToman = priceObj.selling_price ? Math.round(priceObj.selling_price / 10) : 0;
-        const genuinePrice = rrpToman > 0 ? rrpToman : sellingToman;
-
-        return jsonResponse({
-          success: true,
-          data: {
-            name: titleClean,
-            category: cat,
-            priceToman: genuinePrice,
-            imageUrl: img,
-            warranty: '',
-            source: isDiscounted
-              ? `استعلام ابری کلادفلر (${elapsed}ms) قیمت اصلی بدون تخفیف`
-              : `استعلام ابری کلادفلر (${elapsed}ms) قیمت مستقیم کالا`,
-            stockStatus: priceObj.marketable_stock > 0 ? 'in_stock' : 'out_of_stock',
-            selectorUsed: 'api.digikala.com (Cloudflare Pages Edge Worker)',
-            hasDiscount: isDiscounted,
-            discountedPriceToman: isDiscounted ? sellingToman : undefined,
-            discountPercent: priceObj.discount_percent ? `${priceObj.discount_percent}٪` : undefined,
-            queryTimeMs: elapsed,
-          },
-        });
+        const data = selectDigikalaBestVariantPriceEdge(finalJson.data.product, elapsed);
+        return jsonResponse({ success: true, data });
       } catch (err) {
         return jsonResponse(
           {
@@ -606,6 +686,9 @@ export default {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           notes: body.notes || '',
+          barcodes: Array.isArray(body.barcodes)
+            ? body.barcodes.map((b) => String(b || '').trim()).filter(Boolean).slice(0, 20)
+            : [],
         };
 
         return jsonResponse({

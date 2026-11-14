@@ -16,6 +16,7 @@ import {
   fetchAllShopHistoriesFromFirestore,
   subscribeToSharedProducts,
   syncProductPriceInFirestore,
+  updateProductBarcodesInFirestore,
   updateProductMarginInFirestore,
 } from './services/firestoreProducts.ts';
 import {
@@ -45,8 +46,10 @@ import { OfflineIndicator } from './components/OfflineIndicator.tsx';
 import { ProductCard, ViewLayout } from './components/ProductCard.tsx';
 import { ProductDetailModal } from './components/ProductDetailModal.tsx';
 import { AddProductModal } from './components/AddProductModal.tsx';
+import { BarcodeScannerModal } from './components/BarcodeScannerModal.tsx';
 import { SchedulerModal } from './components/SchedulerModal.tsx';
 import { RightDrawerMenu } from './components/RightDrawerMenu.tsx';
+import { normalizeBarcodeInput, normalizeBarcodeList } from './utils/barcodeUtils.ts';
 import { useOnlineStatus } from './hooks/useOnlineStatus.ts';
 import { usePWAInstall } from './hooks/usePWAInstall.ts';
 import {
@@ -153,6 +156,7 @@ export default function App() {
 
   // Modals & Right Hamburger Drawer
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isBarcodeScannerOpen, setIsBarcodeScannerOpen] = useState(false);
   const [isSchedulerModalOpen, setIsSchedulerModalOpen] = useState(false);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
@@ -381,7 +385,8 @@ export default function App() {
               fp.notes !== up.notes ||
               fp.name !== up.name ||
               fp.category !== up.category ||
-              fp.stockStatus !== up.stockStatus
+              fp.stockStatus !== up.stockStatus ||
+              JSON.stringify(fp.barcodes || []) !== JSON.stringify(up.barcodes || [])
             );
           }) ||
           fbProducts.some((fp) => {
@@ -1252,6 +1257,36 @@ export default function App() {
     }
   };
 
+  // Update Product Barcodes
+  const handleUpdateBarcodes = async (productId: string, nextBarcodes: string[]) => {
+    const target = products.find((p) => p.id === productId);
+    if (!target) return;
+    const normalized = normalizeBarcodeList(nextBarcodes);
+
+    try {
+      if (storageMode === 'firebase' && user) {
+        await updateProductBarcodesInFirestore(user.uid, target, normalized);
+      } else {
+        const nowIso = new Date().toISOString();
+        const nextProducts = products.map((p) =>
+          p.id === productId
+            ? {
+                ...p,
+                barcodes: normalized,
+                updatedAt: nowIso,
+              }
+            : p
+        );
+        await commitLocalOrCloudflareBundle(nextProducts, histories, deletedIds);
+      }
+      showToast('بارکدهای کالا با موفقیت بروزرسانی و ذخیره شد');
+    } catch (err) {
+      console.error('Failed to update barcodes', err);
+      showToast('خطا در ذخیره‌سازی بارکدهای کالا');
+      throw err;
+    }
+  };
+
   // Delete product
   const handleDeleteProduct = async () => {
     if (!deleteTarget) return;
@@ -1398,9 +1433,13 @@ export default function App() {
 
   // Filtered Products
   const filteredProducts = products.filter((prod) => {
+    const lowerSearch = searchTerm.toLowerCase();
+    const normalizedSearchBarcode = normalizeBarcodeInput(searchTerm);
     const matchSearch =
-      prod.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      prod.category.toLowerCase().includes(searchTerm.toLowerCase());
+      prod.name.toLowerCase().includes(lowerSearch) ||
+      prod.category.toLowerCase().includes(lowerSearch) ||
+      (normalizedSearchBarcode.length > 0 &&
+        (prod.barcodes || []).some((b) => b.includes(normalizedSearchBarcode)));
     const matchCat = selectedCategory === 'all' || prod.category === selectedCategory;
     return matchSearch && matchCat;
   });
@@ -1601,6 +1640,7 @@ export default function App() {
         onRefreshAll={() => handleRefreshAll(false)}
         isRefreshing={isRefreshing}
         onOpenAddModal={() => setIsAddModalOpen(true)}
+        onOpenBarcodeScanner={() => setIsBarcodeScannerOpen(true)}
         onOpenSchedulerModal={() => setIsSchedulerModalOpen(true)}
         onOpenDrawer={() => setIsDrawerOpen(true)}
         productsCount={products.length}
@@ -1627,8 +1667,10 @@ export default function App() {
             storageMode={storageMode}
             fallbackHistory={histories[selectedProduct.id] || []}
             product={selectedProduct}
+            allProducts={products}
             onBack={() => setSelectedProductId(null)}
             onUpdateMargin={handleUpdateMargin}
+            onUpdateBarcodes={handleUpdateBarcodes}
             onRefreshSingle={handleRefreshSingle}
             isRefreshingSingle={isRefreshing}
           />
@@ -1778,6 +1820,14 @@ export default function App() {
         <AddProductModal
           onClose={() => setIsAddModalOpen(false)}
           onProductAdded={handleProductAdded}
+          existingProducts={products}
+        />
+      )}
+
+      {isBarcodeScannerOpen && (
+        <BarcodeScannerModal
+          products={products}
+          onClose={() => setIsBarcodeScannerOpen(false)}
         />
       )}
 

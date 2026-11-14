@@ -1,6 +1,6 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import { extractPriceFromDigikalaInspect } from './digikalaScraper.ts';
-import { extractDkpId, guessCategoryFromTitle } from './universalScraper.ts';
+import { extractDkpId, selectDigikalaBestVariantPrice } from './universalScraper.ts';
 import { FIXED_SCHEDULE_HOURS } from './schedule.ts';
 
 export interface ClientScrapedResult {
@@ -91,68 +91,11 @@ async function scrapeDigikalaViaCapacitorNative(
     }
 
     const elapsed = Date.now() - t0;
-    const prod = finalJson.data.product;
-    const titleClean = String(prod.title_fa || 'کالای دیجی‌کالا').trim();
-    const cat = prod.category?.title_fa || guessCategoryFromTitle(titleClean);
-    const img =
-      prod.images?.main?.url?.[0] ||
-      'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
-
-    const priceObj = prod.default_variant?.price;
-    if (!priceObj) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام مستقیم موبایل (${elapsed}ms) - ناموجود در دیجی‌کالا`,
-        stockStatus: 'out_of_stock',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    const isDiscounted =
-      Boolean(priceObj.is_incredible) ||
-      Boolean(priceObj.is_promotion) ||
-      Boolean(priceObj.discount_percent && priceObj.discount_percent > 0);
-
-    const rrpToman = priceObj.rrp_price ? Math.round(priceObj.rrp_price / 10) : 0;
-    const sellingToman = priceObj.selling_price
-      ? Math.round(priceObj.selling_price / 10)
-      : 0;
-    const genuinePrice = rrpToman > 0 ? rrpToman : sellingToman;
-
-    if (genuinePrice <= 0) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام مستقیم موبایل (${elapsed}ms) - ناموجود یا بدون قیمت`,
-        stockStatus: 'out_of_stock',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    return {
-      name: titleClean,
-      category: cat,
-      priceToman: genuinePrice,
-      imageUrl: img,
-      warranty: '',
-      source: isDiscounted
-        ? `استعلام مستقیم اندروید (${elapsed}ms) قیمت اصلی بدون تخفیف`
-        : `استعلام مستقیم اندروید (${elapsed}ms) از دیجی‌کالا`,
-      stockStatus: priceObj.marketable_stock > 0 ? 'in_stock' : 'out_of_stock',
-      hasDiscount: isDiscounted,
-      discountedPriceToman: isDiscounted ? sellingToman : undefined,
-      discountPercent: priceObj.discount_percent
-        ? `${priceObj.discount_percent}٪`
-        : undefined,
-      queryTimeMs: elapsed,
-    };
+    return selectDigikalaBestVariantPrice(
+      finalJson.data.product,
+      elapsed,
+      'استعلام مستقیم اندروید'
+    );
   } catch (err) {
     console.warn('[CapacitorNativeScraper] Digikala query error:', err);
     return null;

@@ -113,6 +113,140 @@ export function guessCategoryFromTitle(title: string): string {
   return 'لوازم جانبی و قطعات';
 }
 
+function isDigikalaVariantInStock(v: any): boolean {
+  if (!v || !v.price) return false;
+  if (v.status && v.status !== 'marketable') return false;
+  if (v.has_stock === false) return false;
+  const stock = v.price.marketable_stock;
+  if (stock !== undefined && stock !== null && Number(stock) <= 0) return false;
+  return true;
+}
+
+function parseDigikalaVariantCandidate(v: any) {
+  const p = v?.price;
+  if (!p) return null;
+  const rrpToman = p.rrp_price ? Math.round(Number(p.rrp_price) / 10) : 0;
+  const sellingToman = p.selling_price ? Math.round(Number(p.selling_price) / 10) : 0;
+  const genuinePriceToman = rrpToman > 0 ? rrpToman : sellingToman;
+  if (!Number.isFinite(genuinePriceToman) || genuinePriceToman <= 0) return null;
+
+  const discountNum = p.discount_percent ? Number(p.discount_percent) : 0;
+  const isDiscounted =
+    Boolean(p.is_incredible) ||
+    Boolean(p.is_promotion) ||
+    discountNum > 0 ||
+    (rrpToman > 0 && sellingToman > 0 && sellingToman < rrpToman);
+
+  return {
+    variant: v,
+    genuinePriceToman,
+    sellingToman,
+    isDiscounted,
+    discountNum,
+    sellerTitle: String(v?.seller?.title || '').trim(),
+  };
+}
+
+export function selectDigikalaBestVariantPrice(
+  prod: any,
+  elapsed: number,
+  envLabel = 'استعلام فوری'
+): ScrapedProductData {
+  const titleClean = String(prod?.title_fa || 'کالای دیجی‌کالا').trim();
+  const cat = prod?.category?.title_fa || guessCategoryFromTitle(titleClean);
+  const img =
+    prod?.images?.main?.url?.[0] ||
+    'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
+
+  const defaultVar = prod?.default_variant;
+  const rawVariants = Array.isArray(prod?.variants) ? prod.variants : [];
+
+  const mergedVariants: any[] = [];
+  const seenIds = new Set<string | number>();
+  for (const v of [defaultVar, ...rawVariants]) {
+    if (!v || typeof v !== 'object') continue;
+    const vid = v.id;
+    if (vid !== undefined && vid !== null) {
+      if (seenIds.has(vid)) continue;
+      seenIds.add(vid);
+    }
+    mergedVariants.push(v);
+  }
+
+  const targetColorId = defaultVar?.color?.id ?? null;
+  const targetSizeId = defaultVar?.size?.id ?? null;
+
+  const candidates: NonNullable<ReturnType<typeof parseDigikalaVariantCandidate>>[] = [];
+  for (const v of mergedVariants) {
+    if (!isDigikalaVariantInStock(v)) continue;
+    if (targetColorId !== null && targetColorId !== undefined && v?.color?.id !== targetColorId) {
+      continue;
+    }
+    if (targetSizeId !== null && targetSizeId !== undefined && v?.size?.id !== targetSizeId) {
+      continue;
+    }
+    const parsed = parseDigikalaVariantCandidate(v);
+    if (parsed) candidates.push(parsed);
+  }
+
+  candidates.sort((a, b) => {
+    if (a.genuinePriceToman !== b.genuinePriceToman) {
+      return a.genuinePriceToman - b.genuinePriceToman;
+    }
+    if (a.isDiscounted !== b.isDiscounted) {
+      return a.isDiscounted ? 1 : -1;
+    }
+    if (defaultVar?.id !== undefined && defaultVar?.id !== null) {
+      if (a.variant.id === defaultVar.id) return -1;
+      if (b.variant.id === defaultVar.id) return 1;
+    }
+    return a.sellingToman - b.sellingToman;
+  });
+
+  const best = candidates[0];
+  if (!best) {
+    return {
+      name: titleClean,
+      category: cat,
+      priceToman: 0,
+      imageUrl: img,
+      warranty: '',
+      source: `${envLabel} (${elapsed}ms) - کالای ناموجود در دیجی‌کالا`,
+      stockStatus: 'out_of_stock',
+      selectorUsed: 'api.digikala.com (status: out_of_stock)',
+      queryTimeMs: elapsed,
+    };
+  }
+
+  const defaultSeller = String(defaultVar?.seller?.title || '').trim();
+  const usedCheaperSeller =
+    Boolean(best.sellerTitle) && Boolean(defaultSeller) && best.sellerTitle !== defaultSeller;
+
+  const sellerTag = best.sellerTitle ? ` - ${best.sellerTitle}` : '';
+  const sourceLabel = best.isDiscounted
+    ? `${envLabel} (${elapsed}ms) قیمت اصلی بدون تخفیف${sellerTag}`
+    : usedCheaperSeller
+      ? `${envLabel} (${elapsed}ms) کمترین قیمت غیرتخفیفی${sellerTag}`
+      : `${envLabel} (${elapsed}ms) قیمت مستقیم کالا${sellerTag}`;
+
+  return {
+    name: titleClean,
+    category: cat,
+    priceToman: best.genuinePriceToman,
+    imageUrl: img,
+    warranty: '',
+    source: sourceLabel,
+    stockStatus: 'in_stock',
+    selectorUsed: usedCheaperSeller
+      ? 'api.digikala.com (variants min genuine same-color rrp_price)'
+      : 'api.digikala.com (default_variant.price.rrp_price)',
+    hasDiscount: best.isDiscounted,
+    discountedPriceToman: best.isDiscounted ? best.sellingToman : undefined,
+    discountPercent: best.discountNum > 0 ? `${best.discountNum}٪` : undefined,
+    queryTimeMs: elapsed,
+  };
+}
+
 /**
  * Pure standard Web API fetch with manual cookie-following loop.
  * Bypasses DigiCDN 307 redirect cookie challenge in ~150-300ms.
@@ -189,76 +323,7 @@ export async function scrapeDigikalaPureFetch(dkpId: string): Promise<ScrapedPro
     }
 
     const elapsed = Date.now() - t0;
-    const prod = finalJson.data.product;
-    const titleClean = (prod.title_fa || 'کالای دیجی‌کالا').trim();
-    const cat = prod.category?.title_fa || guessCategoryFromTitle(titleClean);
-    const img =
-      prod.images?.main?.url?.[0] ||
-      'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
-
-    const priceObj = prod.default_variant?.price;
-
-    // Handle out-of-stock items (no active seller or no priceObj)
-    if (!priceObj) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام ابری (${elapsed}ms) - کالای ناموجود در دیجی‌کالا`,
-        stockStatus: 'out_of_stock',
-        selectorUsed: 'api.digikala.com (status: out_of_stock)',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    // RULE: If discounted (is_incredible, is_promotion, or discount_percent > 0),
-    // ALWAYS take the genuine original RRP price and ignore discounted price!
-    const isDiscounted =
-      Boolean(priceObj.is_incredible) ||
-      Boolean(priceObj.is_promotion) ||
-      Boolean(priceObj.discount_percent && priceObj.discount_percent > 0);
-
-    // Digikala prices are in Rials -> divide by 10 for Tomans
-    const rrpToman = priceObj.rrp_price ? Math.round(priceObj.rrp_price / 10) : 0;
-    const sellingToman = priceObj.selling_price ? Math.round(priceObj.selling_price / 10) : 0;
-
-    // Genuine non-discounted reference price
-    const genuinePrice = rrpToman > 0 ? rrpToman : sellingToman;
-
-    if (genuinePrice <= 0) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام ابری (${elapsed}ms) - کالای ناموجود یا بدون قیمت`,
-        stockStatus: 'out_of_stock',
-        selectorUsed: 'api.digikala.com (price <= 0)',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    const sourceLabel = isDiscounted
-      ? `استعلام فوری (${elapsed}ms) قیمت اصلی بدون تخفیف (تخفیف شگفت‌انگیز نادیده گرفته شد)`
-      : `استعلام فوری (${elapsed}ms) قیمت مستقیم کالا از دیجی‌کالا`;
-
-    return {
-      name: titleClean,
-      category: cat,
-      priceToman: genuinePrice,
-      imageUrl: img,
-      warranty: '',
-      source: sourceLabel,
-      stockStatus: priceObj.marketable_stock > 0 ? 'in_stock' : 'out_of_stock',
-      selectorUsed: 'api.digikala.com (default_variant.price.rrp_price)',
-      hasDiscount: isDiscounted,
-      discountedPriceToman: isDiscounted ? sellingToman : undefined,
-      discountPercent: priceObj.discount_percent ? `${priceObj.discount_percent}٪` : undefined,
-      queryTimeMs: elapsed,
-    };
+    return selectDigikalaBestVariantPrice(finalJson.data.product, elapsed, 'استعلام فوری');
   } catch (err: any) {
     console.warn('[UniversalScraper] Pure fetch query failed:', err.message);
     return null;

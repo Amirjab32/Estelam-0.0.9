@@ -15,6 +15,7 @@ export interface ProductItem {
   createdAt: string;
   updatedAt?: string;
   notes: string;
+  barcodes?: string[];
 }
 
 export interface PriceHistoryItem {

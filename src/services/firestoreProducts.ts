@@ -17,6 +17,7 @@ import {
 import { db, handleFirestoreError, OperationType } from '../firebase.ts';
 import { PriceHistoryItem, ProductItem } from '../types.ts';
 import { gregorianToJalali, toPersianDigits } from '../utils/jalali.ts';
+import { normalizeBarcodeList } from '../utils/barcodeUtils.ts';
 
 export const SHARED_SHOP_ID = 'main-shop';
 
@@ -93,6 +94,7 @@ function mapDocToProduct(data: Record<string, any>): ProductItem {
     createdAt: timestampToIso(data.createdAt),
     updatedAt: timestampToIso(data.updatedAt || data.lastRefreshedAt || data.createdAt),
     notes: String(data.notes || ''),
+    barcodes: normalizeBarcodeList(data.barcodes),
   };
 }
 
@@ -154,6 +156,8 @@ function buildCreateSharedProductPayload(
       ? input.stockStatus
       : 'in_stock';
 
+  const normalizedBarcodes = normalizeBarcodeList(input.barcodes);
+
   return {
     id: prodId,
     shopId,
@@ -174,6 +178,7 @@ function buildCreateSharedProductPayload(
     stockStatus,
     warranty: clampStr(input.warranty, 200, ''),
     notes: clampStr(input.notes, 1000, ''),
+    ...(normalizedBarcodes.length > 0 ? { barcodes: normalizedBarcodes } : {}),
     lastRefreshedAt: serverTimestamp(),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -510,7 +515,31 @@ export async function addProductToFirestore(
     lastRefreshedAt: new Date().toISOString(),
     createdAt: new Date().toISOString(),
     notes: prodPayload.notes,
+    barcodes: prodPayload.barcodes,
   };
+}
+
+export async function updateProductBarcodesInFirestore(
+  actorUid: string,
+  product: ProductItem,
+  barcodes: string[],
+  shopId = SHARED_SHOP_ID
+): Promise<string[]> {
+  const safeProdId = sanitizeId(product.id, 'prod');
+  const path = `shops/${shopId}/products/${safeProdId}`;
+  const normalizedBarcodes = normalizeBarcodeList(barcodes);
+
+  try {
+    await updateDoc(doc(db, 'shops', shopId, 'products', safeProdId), {
+      barcodes: normalizedBarcodes,
+      updatedBy: actorUid,
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, path);
+  }
+
+  return normalizedBarcodes;
 }
 
 export async function updateProductMarginInFirestore(
@@ -756,6 +785,8 @@ export async function applyBundleToFirestore(
       const itemHistory = bundle.histories?.[item.id] || bundle.histories?.[safeProdId] || [];
 
       if (existing) {
+        const normalizedBarcodes = normalizeBarcodeList(item.barcodes);
+        const existingBarcodes = normalizeBarcodeList(existing.barcodes);
         batch.update(prodRef, {
           updatedBy: actorUid,
           name: clampStr(item.name, 500, existing.name),
@@ -769,6 +800,9 @@ export async function applyBundleToFirestore(
           stockStatus,
           warranty: clampStr(item.warranty, 200, ''),
           notes: clampStr(item.notes, 1000, ''),
+          ...(normalizedBarcodes.length > 0 || existingBarcodes.length > 0
+            ? { barcodes: normalizedBarcodes }
+            : {}),
           lastRefreshedAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });

@@ -22,14 +22,17 @@ import {
 } from '../utils/jalali.ts';
 import { subscribeToSharedProductHistory } from '../services/firestoreProducts.ts';
 import { StorageMode } from '../types.ts';
+import { BarcodeAssigner } from './BarcodeAssigner.tsx';
 
 interface ProductDetailModalProps {
   userId?: string | null;
   storageMode: StorageMode;
   fallbackHistory?: PriceHistoryItem[];
   product: ProductItem;
+  allProducts?: ProductItem[];
   onBack: () => void;
   onUpdateMargin?: (productId: string, newMargin: number) => Promise<void> | void;
+  onUpdateBarcodes?: (productId: string, nextBarcodes: string[]) => Promise<void> | void;
   onRefreshSingle?: (productId: string) => Promise<void>;
   isRefreshingSingle?: boolean;
 }
@@ -39,8 +42,10 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
   storageMode,
   fallbackHistory = [],
   product,
+  allProducts = [],
   onBack,
   onUpdateMargin,
+  onUpdateBarcodes,
   onRefreshSingle,
   isRefreshingSingle = false,
 }) => {
@@ -366,6 +371,19 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 <span className="text-[10px] text-slate-500 mr-0.5">ت</span>
               </div>
             </div>
+
+            {/* Product Barcodes Management */}
+            {onUpdateBarcodes && (
+              <div className="p-4 rounded-2xl bg-slate-950/60 border border-slate-800">
+                <BarcodeAssigner
+                  barcodes={product.barcodes || []}
+                  onChange={(nextBarcodes) => onUpdateBarcodes(product.id, nextBarcodes)}
+                  allProducts={allProducts}
+                  currentProductId={product.id}
+                  compact
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

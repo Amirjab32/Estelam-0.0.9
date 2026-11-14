@@ -11,6 +11,12 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidBarcodeList(listVal) {
+      return listVal is list
+        && listVal.size() <= 20
+        && (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() >= 1 && listVal[0].size() <= 120));
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -80,7 +86,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'shopId', 'createdBy', 'updatedBy', 'name', 'category', 'sourceUrl', 'imageUrl',
           'currentPriceToman', 'lastPriceToman', 'marginPercent', 'customerQuoteToman',
-          'stockStatus', 'warranty', 'notes', 'lastRefreshedAt', 'createdAt', 'updatedAt'
+          'stockStatus', 'warranty', 'notes', 'barcodes', 'lastRefreshedAt', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && data.id == productId
@@ -115,6 +121,7 @@ service cloud.firestore {
         && data.warranty.size() <= 200
         && data.notes is string
         && data.notes.size() <= 1000
+        && (!('barcodes' in data) || isValidBarcodeList(data.barcodes))
         && data.lastRefreshedAt is timestamp
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -180,7 +187,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'id', 'ownerId', 'name', 'category', 'sourceUrl', 'imageUrl',
           'currentPriceToman', 'lastPriceToman', 'marginPercent', 'customerQuoteToman',
-          'stockStatus', 'warranty', 'notes', 'lastRefreshedAt', 'createdAt', 'updatedAt'
+          'stockStatus', 'warranty', 'notes', 'barcodes', 'lastRefreshedAt', 'createdAt', 'updatedAt'
         ])
         && isValidId(data.id)
         && data.id == productId
@@ -212,6 +219,7 @@ service cloud.firestore {
         && data.warranty.size() <= 200
         && data.notes is string
         && data.notes.size() <= 1000
+        && (!('barcodes' in data) || isValidBarcodeList(data.barcodes))
         && data.lastRefreshedAt is timestamp
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -322,10 +330,10 @@ service cloud.firestore {
                 'customerQuoteToman', 'stockStatus', 'lastRefreshedAt', 'updatedBy', 'updatedAt'
               ])
             ) ||
-            // Action 2: Edit margin or product details by any authorized team member
+            // Action 2: Edit margin, barcodes, or product details by any authorized team member
             (
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'name', 'category', 'marginPercent', 'customerQuoteToman', 'notes', 'updatedBy', 'updatedAt'
+                'name', 'category', 'marginPercent', 'customerQuoteToman', 'notes', 'barcodes', 'updatedBy', 'updatedAt'
               ])
             ) ||
             // Action 3: Full cloud sync or JSON backup merge update
@@ -333,7 +341,7 @@ service cloud.firestore {
               incoming().lastRefreshedAt == request.time
               && incoming().diff(existing()).affectedKeys().hasOnly([
                 'name', 'category', 'sourceUrl', 'imageUrl', 'currentPriceToman', 'lastPriceToman',
-                'marginPercent', 'customerQuoteToman', 'stockStatus', 'warranty', 'notes',
+                'marginPercent', 'customerQuoteToman', 'stockStatus', 'warranty', 'notes', 'barcodes',
                 'lastRefreshedAt', 'updatedBy', 'updatedAt'
               ])
             )
@@ -425,14 +433,14 @@ service cloud.firestore {
             ) ||
             (
               incoming().diff(existing()).affectedKeys().hasOnly([
-                'name', 'category', 'marginPercent', 'customerQuoteToman', 'notes', 'updatedAt'
+                'name', 'category', 'marginPercent', 'customerQuoteToman', 'notes', 'barcodes', 'updatedAt'
               ])
             ) ||
             (
               incoming().lastRefreshedAt == request.time
               && incoming().diff(existing()).affectedKeys().hasOnly([
                 'name', 'category', 'sourceUrl', 'imageUrl', 'currentPriceToman', 'lastPriceToman',
-                'marginPercent', 'customerQuoteToman', 'stockStatus', 'warranty', 'notes',
+                'marginPercent', 'customerQuoteToman', 'stockStatus', 'warranty', 'notes', 'barcodes',
                 'lastRefreshedAt', 'updatedAt'
               ])
             )

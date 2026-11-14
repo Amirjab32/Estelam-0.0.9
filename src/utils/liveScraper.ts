@@ -16,6 +16,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { toEnglishDigits } from './jalali.ts';
+import { selectDigikalaBestVariantPrice } from './universalScraper.ts';
 
 const execAsync = promisify(exec);
 
@@ -126,77 +127,8 @@ async function scrapeViaDirectApi(url: string): Promise<ScrapedProductData | nul
     const json = JSON.parse(stdout);
     if (json.status !== 200 || !json.data?.product) return null;
 
-    const prod = json.data.product;
-    const titleClean = (prod.title_fa || 'کالای دیجی‌کالا').trim();
-    const cat = prod.category?.title_fa || guessCategory(titleClean);
-    const img =
-      prod.images?.main?.url?.[0] ||
-      'https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?auto=format&fit=crop&w=600&q=80';
-
-    const priceObj = prod.default_variant?.price;
     const elapsed = Date.now() - t0;
-
-    // Handle completely out of stock / no price available
-    if (!priceObj) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام فوری (${elapsed}ms) - کالای ناموجود در دیجی‌کالا`,
-        stockStatus: 'out_of_stock',
-        selectorUsed: 'api.digikala.com/product/v1/products (status: out_of_stock)',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    // RULE: If discounted (is_incredible, is_promotion, or discount_percent > 0),
-    // ALWAYS take the original RRP price and ignore discounted price!
-    const isDiscounted =
-      Boolean(priceObj.is_incredible) ||
-      Boolean(priceObj.is_promotion) ||
-      Boolean(priceObj.discount_percent && priceObj.discount_percent > 0);
-
-    // Digikala API prices are in Rials -> divide by 10 for Tomans
-    const rrpToman = priceObj.rrp_price ? Math.round(priceObj.rrp_price / 10) : 0;
-    const sellingToman = priceObj.selling_price ? Math.round(priceObj.selling_price / 10) : 0;
-
-    // Genuine reference price
-    const genuinePrice = rrpToman > 0 ? rrpToman : sellingToman;
-
-    if (genuinePrice <= 0) {
-      return {
-        name: titleClean,
-        category: cat,
-        priceToman: 0,
-        imageUrl: img,
-        warranty: '',
-        source: `استعلام فوری (${elapsed}ms) - کالای ناموجود یا بدون قیمت`,
-        stockStatus: 'out_of_stock',
-        selectorUsed: 'api.digikala.com/product/v1/products (price <= 0)',
-        queryTimeMs: elapsed,
-      };
-    }
-
-    const sourceLabel = isDiscounted
-      ? `استعلام فوری (${elapsed}ms) قیمت اصلی و بدون تخفیف (تخفیف شگفت‌انگیز نادیده گرفته شد)`
-      : `استعلام فوری (${elapsed}ms) قیمت مستقیم کالا از دیجی‌کالا`;
-
-    return {
-      name: titleClean,
-      category: cat,
-      priceToman: genuinePrice,
-      imageUrl: img,
-      warranty: '',
-      source: sourceLabel,
-      stockStatus: priceObj.marketable_stock > 0 ? 'in_stock' : 'out_of_stock',
-      selectorUsed: 'api.digikala.com/product/v1/products (default_variant.price.rrp_price)',
-      hasDiscount: isDiscounted,
-      discountedPriceToman: isDiscounted ? sellingToman : undefined,
-      discountPercent: priceObj.discount_percent ? `${priceObj.discount_percent}٪` : undefined,
-      queryTimeMs: elapsed,
-    };
+    return selectDigikalaBestVariantPrice(json.data.product, elapsed, 'استعلام فوری');
   } catch (err: any) {
     console.warn('[DirectApi] Quick query failed, falling back to browser:', err.message);
     return null;

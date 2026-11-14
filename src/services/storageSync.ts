@@ -10,6 +10,7 @@ import {
 } from '../types.ts';
 import { calculateCustomerQuote } from './firestoreProducts.ts';
 import { gregorianToJalali, toPersianDigits } from '../utils/jalali.ts';
+import { normalizeBarcodeList } from '../utils/barcodeUtils.ts';
 
 const OFFLINE_BUNDLE_KEY = 'shop_offline_bundle_v1';
 const SAVED_PIN_KEY = 'shop_saved_pin_v1';
@@ -188,6 +189,7 @@ export function normalizeProductItem(raw: any, index = 0): ProductItem {
     createdAt: String(raw?.createdAt || nowIso),
     updatedAt: String(raw?.updatedAt || raw?.lastRefreshedAt || raw?.createdAt || nowIso),
     notes: String(raw?.notes || ''),
+    barcodes: normalizeBarcodeList(raw?.barcodes),
   };
 }
 

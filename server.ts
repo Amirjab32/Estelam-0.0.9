@@ -56,6 +56,7 @@ export interface ProductItem {
   lastRefreshedAt: string;
   createdAt: string;
   notes: string;
+  barcodes?: string[];
 }
 
 export interface PriceHistoryItem {
@@ -297,6 +298,9 @@ app.post('/api/products', (req, res) => {
       lastRefreshedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
       notes: body.notes || '',
+      barcodes: Array.isArray(body.barcodes)
+        ? body.barcodes.map((b: unknown) => String(b || '').trim()).filter(Boolean).slice(0, 20)
+        : [],
     };
 
     fs.writeFileSync(path.join(prodDir, 'product.json'), JSON.stringify(newProduct, null, 2));

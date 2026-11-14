@@ -7,7 +7,7 @@
    - A `Product` cannot exist unless `/users/{userId}` exists (`exists(...)` on create).
    - A `PriceHistoryEntry` cannot exist unless `/users/{userId}/products/{productId}` exists (or is created in the same atomic batch via `existsAfter(...)`) and belongs to `request.auth.uid`.
 4. **Temporal Integrity**: `createdAt`, `updatedAt`, and `lastRefreshedAt` must equal `request.time` on creation; `updatedAt` (and `lastRefreshedAt` on price sync) must equal `request.time` on update. `createdAt`, `id`, and `ownerId` are strictly immutable after creation.
-5. **Strict Schema & Boundary Guards**: Every ID (`userId`, `productId`, `historyId`) matches `^[a-zA-Z0-9_\-]+$` and `<= 128` chars. Every string has an explicit `.size()` limit. Prices and margins are bounded (`>= 0`, margin `<= 500`).
+5. **Strict Schema & Boundary Guards**: Every ID (`userId`, `shopId`, `productId`, `historyId`) matches `^[a-zA-Z0-9_\-]+$` and `<= 128` chars. Every string has an explicit `.size()` limit. Prices and margins are bounded (`>= 0`, margin `<= 500`). Product `barcodes` is an optional bounded list (`<= 20` items, string elements `1..120` chars).
 
 ## 2. Adversarial "Dirty Dozen" Payloads (Expected: PERMISSION_DENIED)
 1. **Unauthenticated read/write**: Reading or writing `/users/{uid}/products/p1` with `auth == null`.

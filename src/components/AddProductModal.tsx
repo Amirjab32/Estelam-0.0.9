@@ -15,15 +15,19 @@ import { formatPersianNumber, toPersianDigits } from '../utils/jalali.ts';
 import { extractPriceFromDigikalaInspect } from '../utils/digikalaScraper.ts';
 import { fetchLiveDigikalaProductClient } from '../utils/clientDigikalaScraper.ts';
 import { Capacitor } from '@capacitor/core';
+import { ProductItem } from '../types.ts';
+import { BarcodeAssigner } from './BarcodeAssigner.tsx';
 
 interface AddProductModalProps {
   onClose: () => void;
   onProductAdded: (newProd: any) => Promise<void> | void;
+  existingProducts?: ProductItem[];
 }
 
 export const AddProductModal: React.FC<AddProductModalProps> = ({
   onClose,
   onProductAdded,
+  existingProducts = [],
 }) => {
   const [url, setUrl] = useState('');
   const [inspectSnippet, setInspectSnippet] = useState('');
@@ -51,6 +55,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
   const [imageUrl, setImageUrl] = useState('');
   const [imagePreviewError, setImagePreviewError] = useState(false);
   const [notes, setNotes] = useState('');
+  const [barcodes, setBarcodes] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -239,6 +244,7 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
       lastRefreshedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
       notes: notes.trim(),
+      barcodes,
     };
 
     try {
@@ -615,6 +621,15 @@ export const AddProductModal: React.FC<AddProductModalProps> = ({
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="توضیحات موجودی انبار یا نکات گارانتی..."
                   className="w-full min-h-[42px] rounded-xl border border-slate-700 bg-slate-950 px-3.5 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+
+              <div className="sm:col-span-2 pt-4 border-t border-slate-800">
+                <BarcodeAssigner
+                  barcodes={barcodes}
+                  onChange={setBarcodes}
+                  allProducts={existingProducts}
+                  compact
                 />
               </div>
             </div>

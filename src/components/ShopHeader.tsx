@@ -8,6 +8,7 @@ import {
   HardDrive,
   Menu,
   Shield,
+  ScanBarcode,
 } from 'lucide-react';
 import { toPersianDigits } from '../utils/jalali.ts';
 import { SchedulerInfo, StorageMode } from '../types.ts';
@@ -18,6 +19,7 @@ interface ShopHeaderProps {
   onRefreshAll: () => void;
   isRefreshing: boolean;
   onOpenAddModal: () => void;
+  onOpenBarcodeScanner: () => void;
   onOpenSchedulerModal: () => void;
   onOpenDrawer: () => void;
   productsCount: number;
@@ -31,6 +33,7 @@ export const ShopHeader: React.FC<ShopHeaderProps> = ({
   onRefreshAll,
   isRefreshing,
   onOpenAddModal,
+  onOpenBarcodeScanner,
   onOpenSchedulerModal,
   onOpenDrawer,
   productsCount,
@@ -131,6 +134,17 @@ export const ShopHeader: React.FC<ShopHeaderProps> = ({
 
             {/* Discreet PWA Install button when browser prompts install */}
             <PWAInstallButton compact />
+
+            {/* Enterprise Barcode Scanner Hub Button */}
+            <button
+              type="button"
+              onClick={onOpenBarcodeScanner}
+              title="اسکن بارکد با دوربین موبایل یا بارکدخوان سیستم"
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-indigo-300 hover:text-white text-xs font-semibold border border-indigo-500/40 hover:border-indigo-400 transition whitespace-nowrap shrink-0 active:scale-95"
+            >
+              <ScanBarcode className="w-4 h-4 text-indigo-400" />
+              <span>بارکدخوان</span>
+            </button>
 
             {/* Add New Product Button */}
             <button
